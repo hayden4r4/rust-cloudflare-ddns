@@ -54,7 +54,7 @@ async fn set_domain_ip(ip: &str) -> Result<reqwest::Response, reqwest::Error> {
             "name": dotenv!("RECORD"),
             "content": ip,
             "ttl": 1,
-            "proxied": true});
+            "proxied": false});
 
     let client: reqwest::Client = reqwest::Client::new();
     let resp = client
