@@ -2,25 +2,26 @@
 extern crate dotenv_codegen;
 use public_ip;
 use reqwest;
-use serde_json::json;
+use serde::{Deserialize, Serialize};
+use std::error::Error;
 use tokio;
 
-async fn get_ip() -> Result<String, i32> {
-    /// asynchronously polls services to find public IP,
-    /// returns first it gets back.  Uses public_ip crate
-    let s: String = if let Some(ip) = public_ip::addr().await {
+/// asynchronously polls services to find public IP,
+/// returns first it gets back.  Uses public_ip crate
+async fn get_ip() -> Result<String, Box<dyn Error>> {
+    let ip: String = if let Some(ip) = public_ip::addr().await {
         format!("{:?}", ip)
     } else {
         // Safely exits if there is an error obtaining IP
         std::process::exit(1);
     };
-    Ok(s)
+    Ok(ip)
 }
 
-async fn get_domain_ip() -> Result<serde_json::Value, reqwest::Error> {
-    /// sends get request to cloudflare API to obtain the current
-    /// IP content on the domain.  Formates response with serde json
-    /// and returns the value.
+/// sends get request to cloudflare API to obtain the current
+/// IP content on the domain.  Formates response with serde json
+/// and returns the value.
+async fn get_domain_ip() -> Result<String, Box<dyn Error>> {
     let client: reqwest::Client = reqwest::Client::new();
     let resp = client
         .get(format!(
@@ -32,30 +33,51 @@ async fn get_domain_ip() -> Result<serde_json::Value, reqwest::Error> {
         .header("content-Type", "application/json")
         .send()
         .await?;
+
+    #[derive(Deserialize)]
+    struct Response {
+        result: Content,
+    }
+
+    #[derive(Deserialize)]
+    struct Content {
+        content: String,
+    }
+
     // Creates json from the response
-    let result: serde_json::Value = match serde_json::from_str(&resp.text().await?) {
-        Ok(r) => r,
-        // Safely exits if there is an error creating json
-        Err(_) => std::process::exit(1),
-    };
+    let result: Response = serde_json::from_str(&resp.text().await?)?;
+    let ip: String = result.result.content.clone();
 
-    let s = result["result"]["content"].clone();
-
-    Ok(s)
+    Ok(ip)
 }
 
-async fn set_domain_ip(ip: &str) -> Result<reqwest::Response, reqwest::Error> {
-    /// sets the cloudflare domain IP through a put
-    /// request after it is determined that the
-    /// current public IP != the current domain IP
-    // Creates json for the payload that is sent in the put request
-    let data = json!({
-            "type": dotenv!("TYPE"),
-            "name": dotenv!("RECORD"),
-            "content": ip,
-            "ttl": 1,
-            "proxied": false});
+/// sets the cloudflare domain IP through a put
+/// request after it is determined that the
+/// current public IP != the current domain IP
+async fn set_domain_ip(ip: &str) -> Result<reqwest::Response, Box<dyn Error>> {
+    // Create struct for the data payload
+    #[derive(Serialize)]
+    struct Payload {
+        r#type: String,
+        name: String,
+        content: String,
+        ttl: i32,
+        proxied: bool,
+    }
+    // Import values from .env file and assign them to struct fields
+    // ttl should be auto and proxied should be false unless you
+    // plan to use cloudflare tunnel to safely connect to the remote host.
+    let payload: Payload = Payload {
+        r#type: dotenv!("TYPE").to_string(),
+        name: dotenv!("RECORD").to_string(),
+        content: ip.to_string(),
+        ttl: 1,
+        proxied: false,
+    };
+    // Convert our Payload struct to json for the data payload
+    let payload_json = serde_json::to_string(&payload)?;
 
+    // Make PUT request to cloudlfare to set the updated IP
     let client: reqwest::Client = reqwest::Client::new();
     let resp = client
         .put(format!(
@@ -65,40 +87,29 @@ async fn set_domain_ip(ip: &str) -> Result<reqwest::Response, reqwest::Error> {
         ))
         .header("Authorization", dotenv!("TOKEN"))
         .header("content-Type", "application/json")
-        .json(&data)
+        .json(&payload_json)
         .send()
         .await?;
 
     Ok(resp)
 }
 
+/// Checks if current public IP is different than current domain IP,
+/// then sends PUT request to update the domain IP to the current public
+/// IP if they are different or will exit safely if they are the same.
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn Error>> {
     // obtains current public IP
-    let ip: String = match get_ip().await {
-        Ok(ip) => ip,
-        Err(_) => std::process::exit(1),
-    };
+    let ip: String = get_ip().await?;
+
     // obtains current domain IP as a Result<>
-    let dom_ip: serde_json::Value = match get_domain_ip().await {
-        Ok(dom_ip) => dom_ip,
-        Err(_) => std::process::exit(1),
-    };
-    // converts the current domain IP to a String
-    let domain_ip: String = match dom_ip.as_str() {
-        Some(domain_ip) => String::from(domain_ip),
-        None => std::process::exit(1),
-    };
-    /// Checks if curretn public IP is different than current domain IP,
-    /// then sends put request to update the domain IP to the current
-    /// public IP if they are different and then exits safely, or will
-    /// exit safely if they are the same.  Exits safely upon error.
+    let domain_ip: String = get_domain_ip().await?;
+
     if ip != domain_ip {
-        match set_domain_ip(&ip).await {
-            Ok(_) => std::process::exit(0),
-            Err(_) => std::process::exit(1),
-        };
+        set_domain_ip(&ip).await?;
     } else {
-        std::process::exit(0)
+        std::process::exit(0);
     };
+
+    Ok(())
 }
