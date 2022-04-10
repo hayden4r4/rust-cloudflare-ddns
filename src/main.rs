@@ -5,6 +5,7 @@ use reqwest;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use tokio;
+use log::info;
 
 /// asynchronously polls services to find public IP,
 /// returns first it gets back.  Uses public_ip crate
@@ -99,15 +100,22 @@ async fn set_domain_ip(ip: &str) -> Result<reqwest::Response, Box<dyn Error>> {
 /// IP if they are different or will exit safely if they are the same.
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    // Enable Logging
+    env_logger::init();
+    
     // obtains current public IP
     let ip: String = get_ip().await?;
+    info!("Current public IP is {}", ip);
 
     // obtains current domain IP as a Result<>
     let domain_ip: String = get_domain_ip().await?;
+    info!("Current Domain IP is {}", domain_ip);
 
     if ip != domain_ip {
         set_domain_ip(&ip).await?;
+        info!("Domain IP has been updated");
     } else {
+        info!("IP's match, no update necessary");
         std::process::exit(0);
     };
 
